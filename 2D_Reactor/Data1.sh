@@ -5,7 +5,7 @@
 source /usr/lib/openfoam/openfoam2506/etc/bashrc
 
 # Base case: hardcoded generated folder
-baseDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/generate_mesh_1/2025_10_01_12_29_47_2fef194b42f3495b8d4feaad721b61bf"
+baseDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/generate_mesh_1/2025_10_06_16_48_30_285669cac63c45e9962c2f7cb6a68cd9"
 
 # Results directory with timestamp
 timestamp=$(date +"%Y-%m-%d_%H-%M")
