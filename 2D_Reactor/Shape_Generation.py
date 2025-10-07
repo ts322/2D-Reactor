@@ -226,7 +226,7 @@ def write_vertices_and_edges(path, x_all, y_top, y_bot, l11, l12, l21, l22):
 
 
 def build_mesh(p1, p2, p3, path):
-    shutil.copytree("swakless-1", path)
+    shutil.copytree("Example", path)
     l11, l12, l21, l22, x_all, y_top, y_bot = build_arrays(p1, p2, p3)
 
     if PLOT_GEOMETRY:
@@ -300,7 +300,7 @@ if __name__ == "__main__":
     for i in range(num_samples):
         p1, p2, p3 = map(float, scaled_sample[i])
         ID = "{}_{}".format(datetime.now().strftime('%Y_%m_%d_%H_%M_%S'), uuid.uuid4().hex)
-        path = os.path.join(os.path.expanduser("~/ResearchProject/4th-Year-Research-Project/2D_Reactor/generate_mesh_1"), ID)
+        path = os.path.join(os.path.expanduser("~/ResearchProject/4th-Year-Research-Project/2D_Reactor/Mesh"), ID)
         try:
             mesh_size = build_mesh(p1, p2, p3, path)
         except Exception as e:

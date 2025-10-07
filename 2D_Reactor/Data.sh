@@ -5,11 +5,11 @@
 source /usr/lib/openfoam/openfoam2506/etc/bashrc
 
 # Base case: swakless-1
-baseDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/swakless-1"
+baseDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/Example"
 
 # Results directory with timestamp
 timestamp=$(date +"%Y-%m-%d_%H-%M")
-runDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/Results_$timestamp"
+runDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/Results/Results_$timestamp"
 mkdir -p "$runDir"
 
 echo "Copying from $baseDir to $runDir"

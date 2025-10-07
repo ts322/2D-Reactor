@@ -5,11 +5,11 @@
 source /usr/lib/openfoam/openfoam2506/etc/bashrc
 
 # Base case: hardcoded generated folder
-baseDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/generate_mesh_1/2025_10_06_16_48_30_285669cac63c45e9962c2f7cb6a68cd9"
+baseDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/Mesh/2025_10_07_16_51_03_a1d892871c05425ba27c87ec92b8c216"
 
 # Results directory with timestamp
 timestamp=$(date +"%Y-%m-%d_%H-%M")
-runDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/Results_$timestamp"
+runDir="$HOME/ResearchProject/4th-Year-Research-Project/2D_Reactor/Results/Results_$timestamp"
 mkdir -p "$runDir"
 
 echo "Copying from $baseDir to $runDir"
@@ -18,7 +18,7 @@ cp -r "$baseDir/"* "$runDir/"
 # Run simulation
 cd "$runDir" || exit 1
 blockMesh
-checkMesh -allGeometry -allTopology   # add this single guard
+checkMesh -allGeometry -allTopology
 pimpleFoam
 
 # Ensure test.foam exists for ParaView
