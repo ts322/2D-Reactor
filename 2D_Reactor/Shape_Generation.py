@@ -25,10 +25,6 @@ def sin_line(x, b, a, c, off):
     return b + (a * np.sin(c * (x - off)))
 
 def smooth_local(x, y, idx, k=5):
-    """
-    Smooth a small neighborhood around index 'idx' using quadratic interpolation.
-    Keeps x monotonic and avoids ringing.
-    """
     i0 = max(idx - k, 0)
     i2 = min(idx + k, len(x)-1)
     xm = [x[i0], x[idx], x[i2]]
@@ -44,7 +40,6 @@ def format_point(x, y, z):
     return f"({x:.8f} {y:.8f} {z:.8f})"
 
 def dedupe_str_points(seq):
-    """Remove consecutive duplicate string points."""
     out = []
     last = None
     for s in seq:
@@ -54,15 +49,6 @@ def dedupe_str_points(seq):
     return out
 
 def find_block(lines, key):
-    """
-    Find an OpenFOAM dictionary block by header 'key' and return (start_idx, open_idx, end_idx).
-    Expects structure:
-      key
-      (
-        ...
-      );
-    or: key ( ... );
-    """
     start = None
     for i, ln in enumerate(lines):
         if ln.strip().startswith(key):
@@ -84,15 +70,6 @@ def find_block(lines, key):
     return start, open_idx, end_idx
 
 def build_arrays(p1, p2, p3):
-    """
-    Return:
-      x_line, y_top, y_bot, and polyline point strings for OpenFOAM:
-      l11: top, z=0     (edge 3 2)
-      l12: top, z=THK   (edge 7 6)
-      l21: bottom, z=0  (edge 0 1)
-      l22: bottom, z=THK (edge 4 5)
-    All arrays are strictly increasing in x and the top is always above bottom.
-    """
     if not (0.1 <= p1 <= 0.5):
         raise ValueError(f"p1 out of range [0.1, 0.5]: {p1}")
     if not (3.0 <= p2 <= 6.0):
@@ -159,11 +136,6 @@ def build_arrays(p1, p2, p3):
     return l11, l12, l21, l22, x_all, y_top, y_bot
 
 def write_vertices_and_edges(path, x_all, y_top, y_bot, l11, l12, l21, l22):
-    """
-    Load the template blockMeshDict from 'path/system/blockMeshDict',
-    replace the 'vertices' and 'edges' blocks entirely with consistent data,
-    keep the rest of the file unchanged.
-    """
     dict_path = os.path.join(path, "system", "blockMeshDict")
     with open(dict_path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()

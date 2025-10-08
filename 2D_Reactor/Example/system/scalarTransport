@@ -44,6 +44,6 @@ schemesField    U;
 D               1e-10;
 
 writeControl    runTime;
-writeInterval   0.1; 
+writeInterval   0.2; 
 
 // ************************************************************************* //

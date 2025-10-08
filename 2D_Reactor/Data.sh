@@ -17,6 +17,7 @@ cp -r "$baseDir/"* "$runDir/"
 
 # Run simulation
 cd "$runDir" || exit 1
+blockMesh
 pimpleFoam
 
 # Ensure test.foam exists for ParaView
