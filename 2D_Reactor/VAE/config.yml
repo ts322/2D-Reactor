@@ -1,0 +1,8 @@
+csv: "/Users/marcobarbacci/foam/4th-Year-Research-Project/2D_Reactor/datasets/run_20251002_115523/vae_params_20251002_115524.csv"
+epochs: 100
+batch_size: 32
+latent_dim: 2
+hidden_dim: 16
+lr: 0.001
+beta: 1.0
+save_model: "/Users/marcobarbacci/foam/4th-Year-Research-Project/2D_Reactor/VAE/Weights/vae_model.pt"
