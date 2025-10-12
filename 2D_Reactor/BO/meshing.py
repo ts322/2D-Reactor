@@ -12,6 +12,7 @@ from datetime import datetime
 import math
 import uuid
 import subprocess
+from typing import List, Tuple, Optional
 
 THICKNESS = 0.1                 
 TARGET_END_WIDTH = 0.5         
@@ -19,7 +20,16 @@ MIN_GAP = 0.02
 PLOT_GEOMETRY = True
 DELETE_ON_SEVERE = True         
 N_ADD = 50                      
-BASE_N = 180                   
+BASE_N = 180                
+
+def docker_run(cmd: List[str], case_path: str, image: str = "opencfd/openfoam-default:2506") -> subprocess.CompletedProcess:
+    """Run an OpenFOAM command inside a Docker container."""
+    docker_cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{os.path.abspath(case_path)}:/home/openfoam/case",
+        "-w", "/home/openfoam/case", image
+    ] + cmd
+    return subprocess.run(docker_cmd, capture_output=True, text=True)   
 
 def sin_line(x, b, a, c, off):
     return b + (a * np.sin(c * (x - off)))
@@ -198,9 +208,9 @@ def write_vertices_and_edges(path, x_all, y_top, y_bot, l11, l12, l21, l22):
 
 
 def build_mesh(p1, p2, p3, path):
-    shutil.copytree("Example", path)
+    shutil.copytree("Example", path, dirs_exist_ok=True)
     l11, l12, l21, l22, x_all, y_top, y_bot = build_arrays(p1, p2, p3)
-
+    image = "opencfd/openfoam-default:2506"
     if PLOT_GEOMETRY:
         plt.figure()
         plt.plot(x_all, y_top)
@@ -214,10 +224,10 @@ def build_mesh(p1, p2, p3, path):
 
     write_vertices_and_edges(path, x_all, y_top, y_bot, l11, l12, l21, l22)
 
-    subprocess.run(['blockMesh', '-case', path], check=True)
+    bmesh =docker_run(["blockMesh"], path, image=image)
 
-    check_mesh_output = subprocess.run(['checkMesh', '-case', path], capture_output=True, text=True)
-    out = check_mesh_output.stdout
+    cmesh = docker_run(["checkMesh"], path, image=image)
+    out = cmesh.stdout
 
     mesh_size = None
     for line in out.splitlines():
@@ -253,7 +263,7 @@ def build_mesh(p1, p2, p3, path):
                 if line.strip().startswith("*") or "Failed" in line:
                     print("   " + line.strip())
 
-    return mesh_size
+    
 
 if __name__ == "__main__":
     mesh_sizes = []
@@ -273,7 +283,7 @@ if __name__ == "__main__":
         p1, p2, p3 = map(float, scaled_sample[i])
         #ID = "{}{}".format(datetime.now().strftime('%Y%m_%d_%H_%M_%S'), uuid.uuid4().hex)
         ID = f"Geometry_{i+1}"
-        path = os.path.join(os.path.expanduser("~/ResearchProject/2D-Reactor/2D_Reactor/Mesh"), ID)
+        path = os.path.join(os.path.expanduser("~/2D-Reactor/2D_Reactor/Mesh"), ID)
         try:
             mesh_size = build_mesh(p1, p2, p3, path)
         except Exception as e:
