@@ -1,14 +1,14 @@
-#!/usr/bin/env python3
+#!/u/bin/env python3sr
 """
-Minimal VAE training script — trains and saves model weights (state_dict) only.
+Improved minimal VAE training:
 
-Usage example:
-  python train_vae_simple.py --csv data.csv --epochs 50 --batch-size 64 \
-      --latent-dim 1 --hidden-dims "128,128,64" --lr 1e-3 \
-      --save /path/to/vae_weights.pth
+- Normalizes p1,p2,p3 (min-max) and saves X_min/X_max
+- Tracks recon and KL separately
+- Applies KL warmup (linear anneal from 0 -> beta over warmup_epochs)
+- Optionally samples the decoder each `sample_interval` epochs to inspect diversity
+- Saves model.state_dict() and norms (.npz)
 """
-import os
-import argparse
+import os, argparse
 from typing import Tuple
 import numpy as np
 import pandas as pd
@@ -16,7 +16,8 @@ import torch
 from torch import optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from vae import VAE, vae_loss  # expects vae.py in same folder / importable
+from vae import VAE  # assume vae.py in same folder
+import torch.nn.functional as F
 
 def parse_hidden_dims(s: str | None) -> Tuple[int, ...]:
     if not s:
@@ -38,17 +39,23 @@ def build_loader(X: torch.Tensor, batch_size: int) -> DataLoader:
 def get_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def kl_from_mu_logvar(mu, logvar):
+    # per-sample KL (sum over latent dims)
+    kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+    return kl  # shape (batch,)
+
 def main():
-    p = argparse.ArgumentParser(description="Train VAE and save weights (state_dict).")
-    p.add_argument("--csv", default= "/Users/marcobarbacci/2D-Reactor/2D_Reactor/datasets/vae_params.csv")
-    p.add_argument("--epochs", type=int, default=50)
-    p.add_argument("--batch-size", type=int, default=64)
-    p.add_argument("--latent-dim", type=int, default=1)
-    p.add_argument("--hidden-dims", type=str, default="128,128,64",
-                   help='Comma list, e.g. "128,128,64"')
-    p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--beta", type=float, default=1.0, help="KL weight in VAE loss")
-    p.add_argument("--save", default = "/Users/marcobarbacci/2D-Reactor/2D_Reactor/VAE/Weights/vae_model.pt" )
+    p = argparse.ArgumentParser()
+    p.add_argument("--csv", default="/Users/marcobarbacci/2D-Reactor/2D_Reactor/datasets/vae_params.csv")
+    p.add_argument("--epochs", type=int, default=200)
+    p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--latent-dim", type=int, default=2)   # try >1 for better variability
+    p.add_argument("--hidden-dims", type=str, default="256,256,128")
+    p.add_argument("--lr", type=float, default=1e-5)
+    p.add_argument("--beta", type=float, default=0.3, help="final KL weight")
+    p.add_argument("--kl-warmup-epochs", type=int, default=10, help="linear anneal of KL from 0->beta")
+    p.add_argument("--sample-interval", type=int, default=10, help="save sampled decodes every N epochs (0 to disable)")
+    p.add_argument("--save", default="/Users/marcobarbacci/2D-Reactor/2D_Reactor/VAE/Weights/vae_model.pt")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
@@ -58,40 +65,95 @@ def main():
     device = get_device()
     print("Device:", device)
 
-    # Data
-    X = load_dataset(args.csv)            # (N,3) float32
-    loader = build_loader(X, args.batch_size)
+    # Load and normalize data (min-max)
+    X = load_dataset(args.csv)   # (N,3) torch
+    X_min = X.min(dim=0).values.clone()
+    X_max = X.max(dim=0).values.clone()
+    eps = 1e-8
+    ranges = (X_max - X_min).clamp(min=eps)
+    Xn = (X - X_min) / ranges
 
-    # Model
+    loader = build_loader(Xn, args.batch_size)
+
     hidden_dims = parse_hidden_dims(args.hidden_dims)
     if not hidden_dims:
-        hidden_dims = (128, 128)  # default fallback
+        hidden_dims = (128, 128)
 
-    model = VAE(input_dim=3, latent_dim=args.latent_dim, hidden_dims=hidden_dims).to(device)
+    model = VAE(input_dim=3, latent_dim=args.latent_dim, hidden_dims=hidden_dims).to(device).float()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    # scheduler example: reduce lr on plateau of recon+kl
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=20, verbose=True)
 
-    # Training loop
+    # create output dirs
+    save_path = os.path.expanduser(args.save)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    norm_path = save_path + ".norm.npz"
+
+    # For sampling diagnostics: fixed random latent seeds
+    sample_z = torch.randn(8, args.latent_dim, device=device)  # 8 sample z
+
     for epoch in range(1, args.epochs + 1):
         model.train()
-        total_loss = 0.0
+        epoch_recon = 0.0
+        epoch_kl = 0.0
         n_samples = 0
+
+        # linear KL anne
+        if args.kl_warmup_epochs > 0:
+            beta = float(args.beta) * min(1.0, epoch / float(max(1, args.kl_warmup_epochs)))
+        else:
+            beta = float(args.beta)
+
         for (batch,) in loader:
             batch = batch.to(device=device, dtype=torch.float32)
             optimizer.zero_grad()
-            recon, mu, logvar = model(batch)
-            loss = vae_loss(recon, batch, mu, logvar, beta=args.beta, reduction="mean")
+            recon, mu, logvar = model(batch)  # recon shape (B,3)
+            # reconstruction: sum over features then mean over batch (same as your vae_loss)
+            recon_err = F.mse_loss(recon, batch, reduction="none").sum(dim=1)  # per-sample
+            recon_loss = recon_err.mean()
+            kl_per = kl_from_mu_logvar(mu, logvar)
+            kl_loss = kl_per.mean()
+            loss = recon_loss + beta * kl_loss
             loss.backward()
             optimizer.step()
-            total_loss += float(loss.item())
-            n_samples += batch.size(0)
-        avg_loss = total_loss / max(n_samples, 1)
-        print(f"Epoch {epoch:3d}/{args.epochs}  TrainLoss: {avg_loss:.6f}")
 
-    # Save state_dict only
-    save_path = os.path.expanduser(args.save)
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            epoch_recon += float(recon_loss.item()) * batch.size(0)
+            epoch_kl += float(kl_loss.item()) * batch.size(0)
+            n_samples += batch.size(0)
+
+        epoch_recon /= max(n_samples, 1)
+        epoch_kl /= max(n_samples, 1)
+        total = epoch_recon + beta * epoch_kl
+
+        # scheduler step (monitor total)
+        scheduler.step(total)
+
+        print(f"Epoch {epoch:4d}/{args.epochs}  recon={epoch_recon:.6f}  kl={epoch_kl:.6f}  beta={beta:.4f}  total={total:.6f}")
+
+        # Sample diagnostics: decode a few z and save their un-normalised outputs
+        if args.sample_interval > 0 and epoch % args.sample_interval == 0:
+            model.eval()
+            with torch.no_grad():
+                s = model.decode(sample_z).cpu().numpy()  # shape (M,3)
+            # un-normalize
+            s_unn = s * ranges.cpu().numpy() + X_min.cpu().numpy()
+            # save to CSV for quick inspection
+            samples_out = os.path.join(os.path.dirname(save_path), f"samples_epoch_{epoch}.csv")
+            np.savetxt(samples_out, s_unn, header="p1,p2,p3", delimiter=",", comments="")
+            print(f"  [SAMPLES] wrote {samples_out}")
+
+    # final save
     torch.save(model.state_dict(), save_path)
-    print("Saved model weights (state_dict) to:", save_path)
+    np.savez(norm_path, X_min=X_min.cpu().numpy(), X_max=X_max.cpu().numpy())
+    print("Saved state_dict ->", save_path)
+    print("Saved normalization stats ->", norm_path)
+
+    # Quick post-training checks & tips
+    print("Training finished. Inspect recon/kl printed per epoch.")
+    print("If KL is ~0 for many epochs, posterior collapse occurred.")
+    print("- Remedies: increase latent_dim, increase encoder/decoder capacity,")
+    print("  use KL warmup (we used --kl-warmup-epochs), or reduce final beta (try 0.5, 0.1).")
+    print("- If decoder outputs poor scale, ensure normalization saved and used during inference.")
 
 if __name__ == "__main__":
     main()

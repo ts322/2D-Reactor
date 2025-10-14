@@ -15,6 +15,7 @@ import os, csv, argparse, random
 import numpy as np
 import torch
 import subprocess, shlex
+import math 
 
 import torch
 import torch.nn as nn
@@ -26,13 +27,14 @@ from botorch.sampling.normal import SobolQMCNormalSampler
 from botorch.optim import optimize_acqf
 from gpytorch.mlls.exact_marginal_log_likelihood import ExactMarginalLogLikelihood
 
-from vae import VAE
+
 from meshing import build_mesh
 from post_process import compute_N
 # Load pretrained VAE
 
 # --- near top of file, after imports ---
-from vae import VAE
+
+from ae import AE
 from meshing import build_mesh
 from post_process import compute_N
 
@@ -53,28 +55,76 @@ def objective(z: torch.Tensor, iters: int = None) -> float:
     if vae_model is None:
         raise RuntimeError("vae_model not loaded. Make sure to load the VAE before calling objective().")
 
-    # make sure z is batch-shaped when feeding to the decoder
-    if z.ndim == 1:
-        z_in = z.unsqueeze(0)   # shape (1, latent_dim)
-    else:
-        z_in = z
+       # --- decode z robustly and map to valid parameter ranges ---
+    # ensure batch shape
+    z_in = z.unsqueeze(0) if z.ndim == 1 else z
+    z_in = z_in.float()
 
-    # decode -> returns tensor (batch, input_dim) or (input_dim,)
-    decoded = vae_model.decode(z_in)   # model.decode expects float input
+    with torch.no_grad():
+        decoded = vae_model.decoder(z_in)
+
+    # collapse batch if single
     if decoded.ndim == 2 and decoded.shape[0] == 1:
         decoded = decoded.squeeze(0)
 
-    # get p1,p2,p3 as numpy scalars/arrays as needed by build_mesh
+    # Bring to numpy
     p_vals = decoded.detach().cpu().numpy()
-    # If your decoder returns three separate arrays, adapt here.
-    try:
-        p1, p2, p3 = 0.3, 3.5, 0.5#p_vals[0], p_vals[1], p_vals[2]
-    except Exception as e:
-        # helpful error if dimensions don't match
-        raise RuntimeError(f"decoded shape unexpected: {p_vals.shape}") from e
+
+    # Try to extract 3 scalar parameters.
+    # If decoder returns a vector longer than 3, assume first 3 are p1,p2,p3.
+    # If it returns fewer than 3, fail early.
+    if p_vals.ndim == 0:
+        # single scalar, impossible for 3 params
+        raise RuntimeError(f"Decoder returned a scalar, expected >=3 values.")
+    elif p_vals.ndim == 1:
+        if p_vals.size < 3:
+            raise RuntimeError(f"Decoder returned {p_vals.size} values, expected >=3.")
+        raw_p = p_vals[:3].astype(float)
+    else:
+        # e.g., (N, D) but we already collapsed batch; defensive:
+        raw_p = np.asarray(p_vals).reshape(-1)[:3].astype(float)
+
+    # Define target ranges
+    p1_lo, p1_hi = 0.1, 0.5
+    p2_lo, p2_hi = 3.0, 6.0
+    p3_lo, p3_hi = 0.0, math.pi / 2.0
+
+    # Helper: map arbitrary real -> [lo,hi]
+    def map_to_range(x, lo, hi):
+        x = float(x)
+        if not np.isfinite(x):
+            return None
+        # If x looks already in [0,1], just scale
+        if 0.0 <= x <= 1.0:
+            s = x
+        # If x looks in [-1,1], shift to [0,1]
+        elif -1.0 <= x <= 1.0:
+            s = (x + 1.0) * 0.5
+        else:
+            # otherwise squash with sigmoid to [0,1]
+            s = 1.0 / (1.0 + math.exp(-x))
+        return lo + s * (hi - lo)
+
+    p1_m = map_to_range(raw_p[0], p1_lo, p1_hi)
+    p2_m = map_to_range(raw_p[1], p2_lo, p2_hi)
+    p3_m = map_to_range(raw_p[2], p3_lo, p3_hi)
+
+    # If any mapping failed (NaN/inf), bail with fallback or raise
+    if p1_m is None or p2_m is None or p3_m is None:
+        print(f"[WARN] Decoder produced invalid values: raw={raw_p}")
+        # choose to return a bad metric so BO avoids this point
+        return float("-1e9")
+
+    # Final clipping just in case
+    p1 = float(np.clip(p1_m, p1_lo, p1_hi))
+    p2 = float(np.clip(p2_m, p2_lo, p2_hi))
+    p3 = float(np.clip(p3_m, p3_lo, p3_hi))
+
+    # Debug logging (you can remove or lower verbosity later)
+    print(f"[DEBUG] decoded raw: {raw_p}  -> mapped p1={p1:.6f}, p2={p2:.6f}, p3={p3:.6f}")
 
     # iteration id for naming outputs
-    iter_val = (iters + 1) if (iters is not None) else int(torch.randint(0, 1_000_000, (1,)).item())
+    iter_val = (iters + 1) 
     ID = f"iter_{iter_val}"
     path = os.path.join(base_dir, "Mesh", ID)
    
@@ -160,7 +210,7 @@ def robust_load_state_dict(vae_model, ckpt_path):
 
 # BO loop
 def bo_loop(latent_dim: int, iters: int, batch_size: int, init_sobol: int, results_out: str,
-            seed: int = 123, maximize: bool = True, lo: float = -0.5, hi: float = 0.5):
+            seed: int = 123, maximize: bool = True, lo: float = -5, hi: float = 5):
     torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
 
     # Bounds
@@ -195,12 +245,12 @@ def bo_loop(latent_dim: int, iters: int, batch_size: int, init_sobol: int, resul
 
         # Acquisition: qNEI
         best_f = y.max() if maximize else y.min()
+        sampler = SobolQMCNormalSampler(sample_shape=torch.Size([128]))
         acqf = qNoisyExpectedImprovement(
             model=model,
-            X_baseline=X,
-            sampler=SobolQMCNormalSampler(128),
+            X_baseline=X,      # keep this as the same X you used for training the GP
+            sampler=sampler,
             prune_baseline=True,
-            best_f=best_f
         )
 
         # Optimize acquisition
@@ -280,7 +330,7 @@ def main():
 
     # instantiate model (use args.latent_dim so decoder shape matches)
     if vae_model is None:
-        vae_model = VAE(latent_dim=args.latent_dim)
+        vae_model = AE(latent_dim=args.latent_dim)
 
     # attempt to load weights if we found a state-dict
     if state is not None:
