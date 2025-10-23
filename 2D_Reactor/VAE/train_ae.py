@@ -33,7 +33,7 @@ def main():
     p.add_argument("--csv", default="/Users/marcobarbacci/2D-Reactor/2D_Reactor/datasets/vae_params.csv")
     p.add_argument("--epochs", type=int, default=300)
     p.add_argument("--latent-dim", type=int, default=1)   # try >1 for better variability
-    p.add_argument("--batch-size", type=int, default=32)# try >1 for better variability
+    p.add_argument("--batch-size", type=int, default=32)  # try >1 for better variability
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--sample-interval", type=int, default=10, help="save sampled decodes every N epochs (0 to disable)")
     p.add_argument("--save", default="/Users/marcobarbacci/2D-Reactor/2D_Reactor/VAE/Weights/vae_model.pt")
