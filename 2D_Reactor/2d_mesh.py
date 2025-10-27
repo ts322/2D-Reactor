@@ -173,30 +173,103 @@ def image_to_channel_curves(
     return x_all, y_top, y_bot
 
 
-def build_arrays_from_image():
-    x_all, y_top, y_bot = image_to_channel_curves(
-        IMG_PATH,
-        rdp_eps_px=2.0,                 # tweak: larger -> fewer segments
-        n_resample_perimeter=2000,      # smooth perimeter sampling
-        n_x=SAMPLE_X,                   # number of x-samples (points per edge)
-        Lx_target=LENGTH_X
-    )
+# --- helpers you already have somewhere ---
+# - image_to_channel_curves(img_path, rdp_eps_px, n_resample_perimeter, n_x, Lx_target)
+# - format_point, dedupe_str_points
+# - MIN_GAP, THICKNESS, BASE_N, N_ADD
 
-    # keep your MIN_GAP safety if needed (here likely 0 already)
-    y_top = np.maximum(y_top, y_bot + MIN_GAP)
+def enforce_outlet(x, y_top, y_bot, L_frac=0.04, height=None, blend_pts=40, align='auto'):
+    x = x.copy(); yT = y_top.copy(); yB = y_bot.copy()
+    Lx = x.max() - x.min()
+    i0 = np.searchsorted(x, x.max() - L_frac * Lx)
+    j0 = max(0, i0 - max(blend_pts, 10))
+    yB_ref = float(np.median(yB[j0:i0])) if i0 > j0 else yB[i0-1]
+    h_ref  = float(np.median(yT[j0:i0] - yB[j0:i0])) if i0 > j0 else (yT[i0-1]-yB[i0-1])
+    H = h_ref if height is None else float(height)
 
-    # Format into string points for blockMesh
-    l11 = [format_point(x_all[i], y_top[i], 0.0)       for i in range(len(x_all))]
-    l12 = [format_point(x_all[i], y_top[i], THICKNESS) for i in range(len(x_all))]
-    l21 = [format_point(x_all[i], y_bot[i], 0.0)       for i in range(len(x_all))]
-    l22 = [format_point(x_all[i], y_bot[i], THICKNESS) for i in range(len(x_all))]
+    if align == 'auto':
+        mid = float(np.median(0.5*(yT[j0:i0] + yB[j0:i0]))) if i0 > j0 else 0.5*(yT[i0-1]+yB[i0-1])
+        yB_tgt, yT_tgt = mid - 0.5*H, mid + 0.5*H
+    elif align == 'bottom':
+        yB_tgt, yT_tgt = yB_ref, yB_ref + H
+    elif align == 'top':
+        yTref = float(np.median(yT[j0:i0])) if i0 > j0 else yT[i0-1]
+        yB_tgt, yT_tgt = yTref - H, yTref
+    else:
+        raise ValueError("align must be 'auto'|'bottom'|'top'")
 
-    l11 = dedupe_str_points(l11); l12 = dedupe_str_points(l12)
-    l21 = dedupe_str_points(l21); l22 = dedupe_str_points(l22)
+    # hard set outlet
+    yB[i0:] = yB_tgt; yT[i0:] = yT_tgt
+    # linear blend into it
+    k0 = max(0, i0 - blend_pts)
+    if i0 > k0:
+        yB[k0:i0] = np.linspace(yB[k0], yB_tgt, i0-k0)
+        yT[k0:i0] = np.linspace(yT[k0], yT_tgt, i0-k0)
 
-    return l11, l12, l21, l22, x_all, y_top, y_bot
+    # keep x strictly increasing
+    for i in range(1, len(x)):
+        if x[i] <= x[i-1]:
+            x[i] = x[i-1] + 1e-9
+    return x, yT, yB
 
-          
+
+def build_arrays_from_image_safe(
+    img_path,
+    rdp_eps_px=2.0,
+    n_resample_perimeter=2000,
+    n_x=None,
+    Lx_target=3.0,
+    outlet_height=None,          # set e.g. 0.20 or leave None to auto
+    outlet_frac=0.04,
+    outlet_blend_pts=40,
+):
+    """Returns l11,l12,l21,l22,x_all,y_top,y_bot or raises RuntimeError with details."""
+    if n_x is None:
+        n_x = BASE_N + 2*N_ADD
+
+    # initialize to avoid UnboundLocalError in case of early exception
+    x_all = y_top = y_bot = None
+
+    try:
+        # 1) image -> curves
+        x_all, y_top, y_bot = image_to_channel_curves(
+            img_path,
+            rdp_eps_px=rdp_eps_px,
+            n_resample_perimeter=n_resample_perimeter,
+            n_x=n_x,
+            Lx_target=Lx_target,
+        )
+
+        if x_all is None or len(x_all) == 0:
+            raise RuntimeError("image_to_channel_curves returned empty arrays")
+
+        # 2) enforce outlet (optional but recommended)
+        x_all, y_top, y_bot = enforce_outlet(
+            x_all, y_top, y_bot,
+            L_frac=outlet_frac,
+            height=outlet_height,
+            blend_pts=outlet_blend_pts,
+            align='auto'
+        )
+
+        # 3) safety gap if you still want it
+        y_top = np.maximum(y_top, y_bot + MIN_GAP)
+
+        # 4) format for blockMesh
+        l11 = [format_point(x_all[i], y_top[i], 0.0)          for i in range(len(x_all))]
+        l12 = [format_point(x_all[i], y_top[i], THICKNESS)    for i in range(len(x_all))]
+        l21 = [format_point(x_all[i], y_bot[i], 0.0)          for i in range(len(x_all))]
+        l22 = [format_point(x_all[i], y_bot[i], THICKNESS)    for i in range(len(x_all))]
+
+        l11 = dedupe_str_points(l11); l12 = dedupe_str_points(l12)
+        l21 = dedupe_str_points(l21); l22 = dedupe_str_points(l22)
+
+        return l11, l12, l21, l22, x_all, y_top, y_bot
+
+    except Exception as e:
+        # Make the failure explicit and upstream-safe
+        raise RuntimeError(f"Image-based geometry failed: {e}") from e
+
 
 def docker_run(cmd: List[str], case_path: str, image: str = "opencfd/openfoam-default:2506") -> subprocess.CompletedProcess:
     """Run an OpenFOAM command inside a Docker container."""
@@ -386,16 +459,28 @@ def write_vertices_and_edges(path, x_all, y_top, y_bot, l11, l12, l21, l22):
 def build_mesh(p1, p2, p3, path):
     shutil.copytree("Example", path, dirs_exist_ok=True)
 
-    if USE_IMAGE:
-        l11, l12, l21, l22, x_all, y_top, y_bot = build_arrays_from_image()
-    else:
-        l11, l12, l21, l22, x_all, y_top, y_bot = build_arrays(p1, p2, p3)
-    
-    image = "opencfd/openfoam-default:2506"
+    try:
+        l11, l12, l21, l22, x_all, y_top, y_bot = build_arrays_from_image_safe(
+            IMG_PATH,
+            rdp_eps_px=1.5,                # start conservative
+            n_resample_perimeter=3000,
+            n_x=BASE_N + 2*N_ADD,
+            Lx_target=3.0,
+            outlet_height=None,            # or None to auto
+            outlet_frac=0.04,
+            outlet_blend_pts=40,
+        )
+    except Exception as e:
+        # bubble up so your outer try/except prints the reason and cleans the case
+        raise
+
     if PLOT_GEOMETRY:
         plt.figure()
         plt.plot(x_all, y_top)
         plt.plot(x_all, y_bot)
+        # draw the verticals so it looks “closed”
+        plt.plot([x_all[0], x_all[0]], [y_bot[0], y_top[0]])
+        plt.plot([x_all[-1], x_all[-1]], [y_bot[-1], y_top[-1]])
         plt.xlim(min(x_all)-0.1, max(x_all)+0.1)
         plt.ylim(min(y_bot)-0.2, max(y_top)+0.2)
         plt.grid()
@@ -405,9 +490,10 @@ def build_mesh(p1, p2, p3, path):
 
     write_vertices_and_edges(path, x_all, y_top, y_bot, l11, l12, l21, l22)
 
-    bmesh =docker_run(["blockMesh"], path, image=image)
+    bmesh = docker_run(["blockMesh"], path, image="opencfd/openfoam-default:2506")
+    cmesh = docker_run(["checkMesh"], path, image="opencfd/openfoam-default:2506")
 
-    cmesh = docker_run(["checkMesh"], path, image=image)
+
     out = cmesh.stdout
 
     mesh_size = None
